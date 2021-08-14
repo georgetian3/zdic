@@ -175,7 +175,8 @@ async def download(session, word, chars, bar):
     
 
 async def main():
-    with open('../dicts/words.txt', encoding = 'utf8') as f:
+    with open('words.txt', encoding = 'utf8') as f:
+    #with open('../dicts/words.txt', encoding = 'utf8') as f:
         words = [x.strip() for x in f.readlines()][10000:14000]
 
     zdic = {}
