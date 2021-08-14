@@ -1,5 +1,5 @@
 import sys
-sys.path.append('D:/chinese')
+#sys.path.append('D:/chinese')
 from bs4 import BeautifulSoup, Tag, NavigableString
 from progress.bar import Bar
 from pprint import pprint
@@ -13,9 +13,11 @@ import os
 import re
 from utils import *
 
-with open('../cedict/cedict.json', 'rb') as f:
+with open('cedict.json', 'rb') as f:
+#with open('../cedict/cedict.json', 'rb') as f:
     cedict = json.load(f)
-with open('../chars/chars.json', 'rb') as f:
+with open('chars.json', 'rb') as f:
+#with open('../chars/chars.json', 'rb') as f:
     chars = json.load(f)
 
 
