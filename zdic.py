@@ -1,14 +1,16 @@
 import sys
 #sys.path.append('D:/chinese')
-from bs4 import BeautifulSoup, Tag, NavigableString
+from bs4 import BeautifulSoup, SoupStrainer, Tag, NavigableString
 from progress.bar import Bar
 from pprint import pprint
 import asyncio
 import aiohttp
 import requests
+import cchardet
 import string
 import json
 import time
+import lxml
 import os
 import re
 from utils import *
@@ -54,10 +56,18 @@ def get_pinyin(word, pinyin):
             return pinyin
     return ' '.join(pinyin_join)
 
+soup_time = 0
 
+def parse_only_func(tag):
+    return isinstance(tag, Tag)
 
 def parse_zdic(word, data, zdic):
-    soup = BeautifulSoup(data, 'html.parser')
+    global soup_time
+    start_total = time.time()
+    start = time.time()
+    strainer = SoupStrainer(string=parse_only_func)
+    soup = BeautifulSoup(data, 'lxml', parse_only = strainer)
+    soup_time += time.time() - start
     # word not found
     if soup.title.text[-2:] != '解释':
         return
@@ -83,7 +93,9 @@ def parse_zdic(word, data, zdic):
                         zdic[word][pinyin].append(full_width(tag.text.replace('◎', '').strip()))
             else:
                 zdic[word][pinyin].append(full_width(tags[i + offset].text.replace('◎', '').strip()))
+        
     else:
+
         div = soup.find('div', 'jnr')
         if not div:
             return
@@ -146,45 +158,50 @@ def parse_zdic(word, data, zdic):
         if definition:
             zdic[word][pinyin].append(definition)
 
-parsing_time = 0
+        start_total = time.time() - start_total
+        if start_total > 0.1:
+            print(word)
 
+parsing_time = 0
 
 async def download(session, word, chars, bar):
     global parsing_time
-    global timeout
     while True:
         try:
             async with session.get(f'https://www.zdic.net/hans/{word}') as response:
                 if response.status == 200:
                     data = await response.read()
-                    if data:
-                        try:
-                            start = time.time()
-                            parse_zdic(word, data, chars)
-                            parsing_time += time.time() - start
-                            bar.next()
-                            return
-                        except Exception as e:
-                            print('\nPARSE ERROR', word, e.__class__.__name__, e)
-                elif response.status == 514:
-                    continue
-                else:
-                    print(response.status)
+                    start = time.time()
+                    parse_zdic(word, data, chars)
+                    parsing_time += time.time() - start
+                    bar.next()
+                    return
         except Exception as e:
-            print('\nword download', word, e.__class__.__name__, e)
+            continue
+            if e != TimeoutError:
+                print('\nDownload exception:', word, e.__class__.__name__, e)
     
 
 async def main():
+    
     with open('words.txt', encoding = 'utf8') as f:
     #with open('../dicts/words.txt', encoding = 'utf8') as f:
-        words = [x.strip() for x in f.readlines()][10000:14000]
+        words = [x.strip() for x in f.readlines()][:1000]
 
     zdic = {}
     bar = Bar(max = len(words))
+
+    start = time.time()
     
-    timeout = aiohttp.ClientTimeout(total = 300)
+    timeout = aiohttp.ClientTimeout(total = 10)
     async with aiohttp.ClientSession(timeout = timeout) as session:
         await asyncio.gather(*(download(session, word, zdic, bar) for word in words))
+
+    global parsing_time
+    global soup_time
+    print('\nTotal:', time.time() - start)
+    print('Parsing:', parsing_time)
+    print('Soup:', soup_time)
 
     with open('zdic.json', 'w', encoding = 'utf8') as f:
         json.dump(zdic, f, ensure_ascii = False, indent = 4, sort_keys = True)
@@ -218,7 +235,4 @@ if __name__ == '__main__':
         pprint(zdic)
 
     else:
-        start = time.time()
-        
         asyncio.run(main())
-        print('\n', time.time() - start, parsing_time)
