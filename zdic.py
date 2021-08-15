@@ -1,4 +1,5 @@
 import sys
+from aiohttp import connector
 #sys.path.append('D:/chinese')
 from bs4 import BeautifulSoup, SoupStrainer, Tag, NavigableString
 from progress.bar import Bar
@@ -13,6 +14,8 @@ import time
 import lxml
 import os
 import re
+
+from requests.models import ChunkedEncodingError
 from utils import *
 
 with open('cedict.json', 'rb') as f:
@@ -31,7 +34,6 @@ def remove_invalid(text):
         if char in pinyin_chars:
             chars.append(char)
     return ''.join(chars)
-
 
 def get_pinyin(word, pinyin):
     pinyin = remove_invalid(pinyin)
@@ -58,25 +60,66 @@ def get_pinyin(word, pinyin):
 
 soup_time = 0
 
-def parse_only_func(tag):
-    return isinstance(tag, Tag)
+def char_tags(name, attrs):
+    return name == 'div' and 'class' in attrs and attrs['class'] == 'content definitions jnr'
+
+def word_tags(name, attrs):
+    return 'class' in attrs and \
+        (name == 'div' and attrs['class'] == 'jnr' or \
+        name == 'span' and attrs['class'] == 'dicpy')
+
+def split_numbered(text):
+    defs = []
+    start = 0
+    end = 0
+    count = 1
+    while True:
+        delim = f'{count}.'
+        end = text.find(f'{count}.', start)
+        if end != -1:
+            if count != 1:
+                defs.append(full_width(text[start:end].strip()))
+            start = end + len(delim)
+        else:
+            defs.append(text[start:].strip())
+            return defs
+        count += 1
+        
+def find_first_tag(text, name, class_ = None, start = 0):
+    if class_:
+        class_index = text.find(class_, start)
+        if class_index == -1:
+            return (False, False)
+        tag_start = text.rfind('<', class_index)
+        tag_end = text.find()
 
 def parse_zdic(word, data, zdic):
     global soup_time
-    start_total = time.time()
     start = time.time()
-    strainer = SoupStrainer(string=parse_only_func)
-    soup = BeautifulSoup(data, 'lxml', parse_only = strainer)
-    soup_time += time.time() - start
-    # word not found
-    if soup.title.text[-2:] != '解释':
-        return
 
-    if len(word) == 1:
+    # finding title
+    title = data.find('</title>')
+    if data[title - 2 : title] != '解释':
+        return
         
-        div = soup.find('div', 'content definitions jnr')
-        if not div:
+
+    content_start, content_end = -1, -1
+    if len(word) == 1:
+        content_tag = '<div class="content definitions jnr">'
+        content_start = data.find(content_tag, title)
+        if content_start != -1:
+            content_end = data.find('</div>', content_start) + 6
+        if content_start == -1 or content_end == -1:
             return
+
+        soup = BeautifulSoup(data[content_start:content_end], 'lxml')
+
+        soup_time += time.time() - start
+
+
+        div = soup.find('div')
+
+
         zdic[word] = {}
         tags = [tag for tag in div.contents if isinstance(tag, Tag)]
         for i in range(len(tags)):
@@ -96,9 +139,33 @@ def parse_zdic(word, data, zdic):
         
     else:
 
-        div = soup.find('div', 'jnr')
-        if not div:
+        dicpy_start, dicpy_end = -1, -1
+        dicpy_tags = ['<span class = "dicpy"', '<span class="dicpy"']
+        for tag in dicpy_tags:
+            dicpy_start = data.find(tag)
+            if dicpy_start == -1:
+                continue
+            else:
+                dicpy_end = data.find('>', dicpy_start + len(tag) + 1) + 1
+                break
+        if dicpy_start == -1 or dicpy_end == -1:
+            print('dicpy???')
             return
+        
+        content_tag = '<div class="jnr">'
+        content_start = data.find(content_tag, dicpy_end)
+        if content_start != -1:
+            content_end = data.find('</div>', content_start) + 6
+        if content_start == -1 or content_end == -1:
+            return
+        
+
+        soup = BeautifulSoup(data[dicpy_start:dicpy_end] + data[content_start:content_end], 'lxml')
+
+        soup_time += time.time() - start
+
+        div = soup.find('div', 'jnr')
+
         zdic[word] = {}
         tags = []
         pinyin = ''
@@ -106,6 +173,16 @@ def parse_zdic(word, data, zdic):
         if single_pinyin:
             pinyin = soup.find('span', class_ = 'dicpy').text.strip()
             zdic[word][pinyin] = []
+
+        if len(div.contents) == 1:
+            if isinstance(div.contents[0], NavigableString):
+                text = str(div.contents[0])
+            else:
+                text = div.contents[0].text
+            for definition in split_numbered(text):
+                zdic[word][pinyin].append(definition)
+            return
+        
         def_count = 0
         definition = ''
         
@@ -115,7 +192,8 @@ def parse_zdic(word, data, zdic):
                 if stripped:
                     definition += full_width(stripped)
             elif p.name == 'li':
-                definition += full_width(p.text.strip())
+                for definition in split_numbered(div.contents[0].text):
+                    zdic[word][pinyin].append(definition)
             else:
                 for tag in p.children:
                     if isinstance(tag, NavigableString):
@@ -158,44 +236,67 @@ def parse_zdic(word, data, zdic):
         if definition:
             zdic[word][pinyin].append(definition)
 
-        start_total = time.time() - start_total
-        if start_total > 0.1:
-            print(word)
-
 parsing_time = 0
 
-async def download(session, word, chars, bar):
+async def download(session, word, chars, bar, retry):
     global parsing_time
+    retry[word] = 0
     while True:
         try:
+            if retry[word] == 5:
+                print('\nRetry limit:', word)
+                return
             async with session.get(f'https://www.zdic.net/hans/{word}') as response:
                 if response.status == 200:
                     data = await response.read()
+
                     start = time.time()
-                    parse_zdic(word, data, chars)
+                    try:
+                        parse_zdic(word, str(data, response.charset), chars)
+                    except Exception as e:
+                        print('\nParse exception:', word, e.__class__.__name__, e)
+
                     parsing_time += time.time() - start
                     bar.next()
                     return
         except Exception as e:
+            retry[word] += 1
             continue
-            if e != TimeoutError:
-                print('\nDownload exception:', word, e.__class__.__name__, e)
+
     
 
 async def main():
-    
+    print('Reading words')
     with open('words.txt', encoding = 'utf8') as f:
     #with open('../dicts/words.txt', encoding = 'utf8') as f:
-        words = [x.strip() for x in f.readlines()][:1000]
+        words = [x.strip() for x in f.readlines()][20000:23000]
 
-    zdic = {}
     bar = Bar(max = len(words))
 
+
     start = time.time()
+    print('Downloading and parsing')
     
-    timeout = aiohttp.ClientTimeout(total = 10)
-    async with aiohttp.ClientSession(timeout = timeout) as session:
-        await asyncio.gather(*(download(session, word, zdic, bar) for word in words))
+
+    chunk = 1000
+    count = 0
+
+    timeout = aiohttp.ClientTimeout(sock_connect = 5)
+    connector = aiohttp.TCPConnector(limit = 500)
+    async with aiohttp.ClientSession(timeout = timeout, connector = connector) as session:
+        while True:
+            zdic = {}
+            retry = {}
+            await asyncio.gather(*(download(session, words[i], zdic, bar, retry) for i in range(count, min(len(words), count + chunk))))
+            with open('zdic.json', 'a', encoding = 'utf8') as f:
+                entries = ',\n'.join(f'{json.dumps(word, ensure_ascii = False)}: {json.dumps(zdic[word], ensure_ascii = False, indent = 4)}' for word in zdic)
+                f.write(entries)
+                f.write(',\n')
+            count += chunk
+            if count >= len(words):
+                break
+
+
 
     global parsing_time
     global soup_time
@@ -203,27 +304,24 @@ async def main():
     print('Parsing:', parsing_time)
     print('Soup:', soup_time)
 
-    with open('zdic.json', 'w', encoding = 'utf8') as f:
-        json.dump(zdic, f, ensure_ascii = False, indent = 4, sort_keys = True)
 
-
+        
 
 if __name__ == '__main__':
-    #asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     test = False
 
     if test:
         zdic = {}
-        word = '三折喇叭形反射器天线'
-        if False and os.path.isfile(f'{word}.html'):
-            with open(f'{word}.html', 'rb') as f:
+        word = '丈'
+        if os.path.isfile(f'{word}.html'):
+            with open(f'{word}.html', encoding = 'utf8') as f:
                 data = f.read()
         else:
             while True:
                 try:
-                    data = requests.get(f'https://www.zdic.net/hans/{word}').content
+                    data = requests.get(f'https://www.zdic.net/hans/{word}').text
                     with open(f'{word}.html', 'wb') as f:
                         f.write(data)
                     break
