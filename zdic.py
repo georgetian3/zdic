@@ -178,12 +178,13 @@ def parse_zdic(word, data, zdic):
         definition = ''
         
         for p in div.children:
+            print(p)
             if isinstance(p, NavigableString):
                 stripped = str(p).strip()
                 if stripped:
                     definition += full_width(stripped)
             elif p.name == 'li':
-                for definition in split_numbered(div.contents[0].text):
+                for definition in split_numbered(p.text):
                     zdic[word][pinyin].append(definition)
             else:
                 for tag in p.children:
