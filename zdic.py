@@ -178,7 +178,6 @@ def parse_zdic(word, data, zdic):
         definition = ''
         
         for p in div.children:
-            print(p)
             if isinstance(p, NavigableString):
                 stripped = str(p).strip()
                 if stripped:
@@ -282,7 +281,7 @@ async def main():
             
             await asyncio.gather(*(download(session, words[i], zdic, bar, retry) for i in range(count, min(len(words), count + chunk))))
             with open('zdic.json', 'a', encoding = 'utf8') as f:
-                entries = ',\n'.join(f'{json.dumps(word, ensure_ascii = False)}: {json.dumps(zdic[word], ensure_ascii = False, indent = 4)}' for word in zdic)
+                entries = ',\n'.join(f'{json.dumps(word, ensure_ascii = False)}: {json.dumps(zdic[word], ensure_ascii = False, indent = 4)}' for word in zdic if zdic[word] != {})
                 f.write(entries)
                 f.write(',\n')
             count += chunk
@@ -305,7 +304,7 @@ async def main():
 if __name__ == '__main__':
     #asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    test = True
+    test = False
 
     if test:
         zdic = {}
