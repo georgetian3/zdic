@@ -14,8 +14,6 @@ import time
 import lxml
 import os
 import re
-
-from requests.models import ChunkedEncodingError
 from utils import *
 
 with open('cedict.json', 'rb') as f:
@@ -85,13 +83,6 @@ def split_numbered(text):
             return defs
         count += 1
         
-def find_first_tag(text, name, class_ = None, start = 0):
-    if class_:
-        class_index = text.find(class_, start)
-        if class_index == -1:
-            return (False, False)
-        tag_start = text.rfind('<', class_index)
-        tag_end = text.find()
 
 def parse_zdic(word, data, zdic):
     global soup_time
@@ -243,13 +234,13 @@ async def download(session, word, chars, bar, retry):
     retry[word] = 0
     while True:
         try:
-            if retry[word] == 5:
-                print('\nRetry limit:', word)
+            if retry[word] >= 5:
+                retry[word] = 6
+                #print('\nRetry limit:', word)
                 return
             async with session.get(f'https://www.zdic.net/hans/{word}') as response:
                 if response.status == 200:
                     data = await response.read()
-
                     start = time.time()
                     try:
                         parse_zdic(word, str(data, response.charset), chars)
@@ -269,7 +260,7 @@ async def main():
     print('Reading words')
     with open('words.txt', encoding = 'utf8') as f:
     #with open('../dicts/words.txt', encoding = 'utf8') as f:
-        words = [x.strip() for x in f.readlines()][20000:23000]
+        words = [x.strip() for x in f.readlines()]
 
     bar = Bar(max = len(words))
 
@@ -278,15 +269,16 @@ async def main():
     print('Downloading and parsing')
     
 
-    chunk = 1000
+    chunk = 10000
     count = 0
 
     timeout = aiohttp.ClientTimeout(sock_connect = 5)
     connector = aiohttp.TCPConnector(limit = 500)
+    retry = {}
     async with aiohttp.ClientSession(timeout = timeout, connector = connector) as session:
         while True:
             zdic = {}
-            retry = {}
+            
             await asyncio.gather(*(download(session, words[i], zdic, bar, retry) for i in range(count, min(len(words), count + chunk))))
             with open('zdic.json', 'a', encoding = 'utf8') as f:
                 entries = ',\n'.join(f'{json.dumps(word, ensure_ascii = False)}: {json.dumps(zdic[word], ensure_ascii = False, indent = 4)}' for word in zdic)
@@ -296,6 +288,8 @@ async def main():
             if count >= len(words):
                 break
 
+    with open('retry.txt', 'w', encoding = 'utf8') as f:
+        f.write('\n'.join([word for word in retry if retry[word] == 6]))
 
 
     global parsing_time
@@ -308,13 +302,13 @@ async def main():
         
 
 if __name__ == '__main__':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    #asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    test = False
+    test = True
 
     if test:
         zdic = {}
-        word = '丈'
+        word = '一交'
         if os.path.isfile(f'{word}.html'):
             with open(f'{word}.html', encoding = 'utf8') as f:
                 data = f.read()
